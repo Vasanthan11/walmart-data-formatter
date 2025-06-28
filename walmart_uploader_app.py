@@ -24,7 +24,36 @@ qc_map = {
     "ND": "Hariharan"
 }
 
-proof_types = ["PRESS", "CPR", "PRE PRESS", "AFTER PRESS", "PRINT READY", "PROOF1"]
+def detect_proof(name, path):
+    name = name.upper()
+    path = path.upper().replace("_", " ").replace("-", " ").replace(".", " ")
+
+    if "PROOF1" in path:
+        return "PROOF1"
+    if "PRE PRESS" in path:
+        return "PRE PRESS"
+    if "AFTER PRESS" in path:
+        return "AFTER PRESS"
+    if "CPR" in path:
+        return "CPR"
+    if "PRINT READY" in path or "PRESS PRINT READY CHANGES" in path:
+        return "PRINT READY"
+    if "PRESS" in path:
+        if "-AP" in name or "AP-" in name:
+            return "AFTER PRESS"
+        if "-PP" in name or "PP-" in name:
+            return "PRE PRESS"
+        return "PRESS"
+    return ""
+
+def clean_page_name(name):
+    # Move -AP or -PP to end if present in prefix
+    match = re.match(r'^(AP|PP)-(.+)', name)
+    if match:
+        suffix = match.group(1)
+        rest = match.group(2).strip()
+        return f"{rest} -{suffix}"
+    return name
 
 def extract_data(raw_text):
     lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
@@ -33,9 +62,10 @@ def extract_data(raw_text):
     result = []
 
     for name, path in pairs:
+        name = clean_page_name(name)
         week_match = re.search(r'WK\s*(\d+)', name, re.IGNORECASE)
         week = f"week-{week_match.group(1)}" if week_match else ""
-        proof = next((ptype for ptype in proof_types if ptype in path.upper()), "")
+        proof = detect_proof(name, path)
 
         # Extract prefix like MU-D or SK-ND
         prefix_match = re.match(r'([A-Z]{2})-([A-Z]{1,2})', name)
