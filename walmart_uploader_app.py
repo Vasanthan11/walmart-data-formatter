@@ -2,27 +2,16 @@ import streamlit as st
 import pandas as pd
 import re
 from io import BytesIO
+from datetime import datetime, timedelta
 from openpyxl import Workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 st.title("WALMART - EXCEL DATA SHEET CORRECTION PROCESS")
 
-raw_text = st.text_area("📋 Paste raw proof content below:", height=300)
+raw_text = st.text_area("📋 Paste raw proof content below:", height=400)
 
-# Page Assembler mapping
-assembler_map = {
-    "MU": "Munish",
-    "SD": "Siddik",
-    "SK": "Sakthivel",
-    "PR": "Prasanth"
-}
-
-# QC mapping
-qc_map = {
-    "D": "Direct Upload",
-    "ND": "Hariharan"
-}
+# --- Helper Functions ---
 
 def detect_proof(name, path):
     name = name.upper()
@@ -47,7 +36,6 @@ def detect_proof(name, path):
     return ""
 
 def clean_page_name(name):
-    # Move -AP or -PP to end if present in prefix
     match = re.match(r'^(AP|PP)-(.+)', name)
     if match:
         suffix = match.group(1)
@@ -55,44 +43,80 @@ def clean_page_name(name):
         return f"{rest} -{suffix}"
     return name
 
+def parse_date_from_line(line, current_year=2025):
+    match_day_time = re.search(r'(\w{3})\s+(\d{1,2}:\d{2})\s*[  ]*([APMapm]+)', line)
+    match_full_date = re.search(r'([A-Za-z]{3,})\s+(\d{1,2}),\s+(\d{1,2}:\d{2})\s*([APMapm]+)', line)
+
+    if match_full_date:
+        month, day, time_str, am_pm = match_full_date.groups()
+        dt = datetime.strptime(f"{month} {day} {current_year} {time_str} {am_pm}", "%b %d %Y %I:%M %p")
+        return dt.strftime("%d/%m/%Y")
+
+    elif match_day_time:
+        day_abbr, time_str, am_pm = match_day_time.groups()
+        weekday_map = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        target_index = weekday_map.index(day_abbr[:3])
+        today = datetime.now()
+        current_index = today.weekday()
+        delta_days = (target_index - current_index) % 7
+        base_date = today + timedelta(days=delta_days)
+        dt = datetime.strptime(f"{base_date.date()} {time_str} {am_pm}", "%Y-%m-%d %I:%M %p")
+        
+        # Apply 4 PM rule
+        if dt.time() < datetime.strptime("04:00 PM", "%I:%M %p").time():
+            dt -= timedelta(days=1)
+
+        return dt.strftime("%d/%m/%Y")
+
+    return ""
+
 def extract_data(raw_text):
     lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-    pairs = [(lines[i], lines[i+1]) for i in range(0, len(lines), 2)]
+
+    unwanted_keywords = ["unread", "confirm", "annotation", "reduce"]
+    cleaned_lines = [line for line in lines if not any(k in line.lower() for k in unwanted_keywords)]
 
     result = []
+    i = 0
+    while i < len(cleaned_lines) - 2:
+        timestamp_line = cleaned_lines[i]
+        name_line = cleaned_lines[i]
+        page_line = cleaned_lines[i + 1]
+        path_line = cleaned_lines[i + 2]
 
-    for name, path in pairs:
-        name = clean_page_name(name)
-        week_match = re.search(r'WK\s*(\d+)', name, re.IGNORECASE)
-        week = f"week-{week_match.group(1)}" if week_match else ""
-        proof = detect_proof(name, path)
+        if ',' in name_line and path_line.startswith("/Volumes"):
+            assembler = name_line.split(',')[0].strip()
+            date_str = parse_date_from_line(timestamp_line)
+            page_name_cleaned = clean_page_name(page_line)
 
-        # Extract prefix like MU-D or SK-ND
-        prefix_match = re.match(r'([A-Z]{2})-([A-Z]{1,2})', name)
-        assembler_code = prefix_match.group(1) if prefix_match else ""
-        qc_code = prefix_match.group(2) if prefix_match else ""
+            week_match = re.search(r'WK\s*(\d+)', page_name_cleaned, re.IGNORECASE)
+            week = f"week-{week_match.group(1)}" if week_match else ""
+            proof = detect_proof(page_name_cleaned, path_line)
+            qc = "Direct Upload" if page_line.strip().upper().startswith("D-") else "Hariharan"
 
-        assembler = assembler_map.get(assembler_code, "")
-        qc = qc_map.get(qc_code, "")
+            result.append({
+                "Date": date_str,
+                "Banner Name": "walmart",
+                "Week": week,
+                "Page Name": page_name_cleaned,
+                "Proof": proof,
+                "Language": "All zones",
+                "Page Assembler": assembler,
+                "QC": qc
+            })
 
-        result.append({
-            "Banner Name": "walmart",
-            "Week": week,
-            "Page Name": name,
-            "Proof": proof,
-            "Language": "All zones",
-            "Page Assembler": assembler,
-            "QC": qc
-        })
+            i += 3
+        else:
+            i += 1
 
     return pd.DataFrame(result)
 
 def apply_dropdowns(ws, start_row, end_row):
     dropdowns = {
-        'D': ["PRESS", "CPR", "PRE PRESS", "AFTER PRESS", "PRINT READY", "PROOF1"],
-        'E': ["All zones", "BIL", "ENG"],
-        'F': ["", "Munish", "Siddik", "Sakthivel", "Prasanth"],
-        'G': ["", "Direct Upload", "Hariharan"]
+        'E': ["PRESS", "CPR", "PRE PRESS", "AFTER PRESS", "PRINT READY", "PROOF1"],
+        'F': ["All zones", "BIL", "ENG"],
+        'G': ["", "Munish Balakrishnan", "Mohammed Siddik", "Sakthivel S", "Prasanth As", "Naveen Kumar"],
+        'H': ["", "Direct Upload", "Hariharan"]
     }
 
     for col, options in dropdowns.items():
@@ -105,6 +129,8 @@ def apply_dropdowns(ws, start_row, end_row):
         ws.add_data_validation(dv)
         dv.add(f"{col}{start_row}:{col}{end_row}")
 
+# --- Streamlit Interface ---
+
 if st.button("✅ Generate Excel with Dropdowns"):
     if not raw_text.strip():
         st.warning("Please paste some raw data first.")
@@ -112,7 +138,6 @@ if st.button("✅ Generate Excel with Dropdowns"):
         df = extract_data(raw_text)
         st.success("🎉 Data processed successfully!")
 
-        # Create Excel
         wb = Workbook()
         ws = wb.active
         ws.title = "Proof Data"
@@ -122,7 +147,6 @@ if st.button("✅ Generate Excel with Dropdowns"):
 
         apply_dropdowns(ws, start_row=2, end_row=ws.max_row)
 
-        # Output Excel
         output = BytesIO()
         wb.save(output)
         output.seek(0)
@@ -130,6 +154,6 @@ if st.button("✅ Generate Excel with Dropdowns"):
         st.download_button(
             label="📥 Download Excel",
             data=output,
-            file_name="walmart_proof_data_with_qc.xlsx",
+            file_name="walmart_proof_data_with_date.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
